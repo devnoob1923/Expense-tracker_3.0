@@ -228,9 +228,9 @@ export async function syncExpenses() {
     rateLimitMap.set(user.id, now)
 
     const oneWeekAgo = new Date()
-    oneWeekAgo.setDate(oneWeekAgo.getDate() - 14)
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7)
     const query = [
-        'after:' + Math.floor(oneWeekAgo.getTime() / 1000),
+        `after:${oneWeekAgo.toISOString().split('T')[0].replace(/-/g, '/')}`,
         '(',
         'receipt',
         'OR invoice',
@@ -292,7 +292,7 @@ export async function syncExpenses() {
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
     const model = genAI.getGenerativeModel({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-1.5-flash',
         generationConfig: { responseMimeType: 'application/json' }
     })
 
