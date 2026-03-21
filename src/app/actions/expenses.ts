@@ -270,7 +270,19 @@ export async function syncExpenses() {
         throw new Error('Failed to fetch from Gmail. The token may have expired. Please re-authenticate.')
     }
 
-    if (messages.length === 0) return { message: 'No new receipts found', count: 0 }
+    if (messages.length === 0) {
+        return {
+            message: 'No new receipts found',
+            count: 0,
+            diagnostics: {
+                matchingEmails: 0,
+                candidateEmails: 0,
+                inserted: 0,
+                skipped: 0,
+                failed: 0,
+            },
+        }
+    }
 
     const messageIds = messages.map((message) => message.id as string)
     const { data: processedEmails } = await adminDb
@@ -283,7 +295,17 @@ export async function syncExpenses() {
     const newMessages = messages.filter((message) => !processedIdSet.has(message.id as string))
 
     if (newMessages.length === 0) {
-        return { message: 'All latest receipts are already synced.', count: 0 }
+        return {
+            message: 'All latest receipts are already synced.',
+            count: 0,
+            diagnostics: {
+                matchingEmails: messages.length,
+                candidateEmails: 0,
+                inserted: 0,
+                skipped: 0,
+                failed: 0,
+            },
+        }
     }
 
     if (!process.env.GEMINI_API_KEY) {
@@ -446,7 +468,14 @@ If the email is not a transaction or amount/date are missing, return {"error":"n
         message: successfulInserts > 0
             ? `Synced ${successfulInserts} transactions from ${newMessages.length} candidate emails.`
             : `Found ${messages.length} matching emails, ${newMessages.length} new candidates, but 0 transactions were saved. Skipped ${skippedCount}, failed ${failedCount}. Check ingestion_errors in Supabase for details.`,
-        count: successfulInserts
+        count: successfulInserts,
+        diagnostics: {
+            matchingEmails: messages.length,
+            candidateEmails: newMessages.length,
+            inserted: successfulInserts,
+            skipped: skippedCount,
+            failed: failedCount,
+        },
     }
 }
 
@@ -563,4 +592,53 @@ export async function fetchDailySpending(days: number | 'all' = 14) {
             amount: Number(value.amount.toFixed(2)),
             transactions: value.transactions,
         }))
+}
+
+export async function fetchSyncDiagnostics() {
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) throw new Error('Unauthorized')
+
+    const adminDb = createAdminClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!
+    )
+
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+
+    const [{ count: processedCount, error: processedError }, { count: transactionCount, error: transactionError }, { data: recentErrors, error: errorsError }] = await Promise.all([
+        adminDb
+            .from('processed_emails')
+            .select('id', { count: 'exact', head: true })
+            .eq('user_id', user.id)
+            .gte('processed_at', since),
+        adminDb
+            .from('transactions')
+            .select('transaction_id', { count: 'exact', head: true })
+            .eq('user_id', user.id)
+            .gte('created_at', since),
+        adminDb
+            .from('ingestion_errors')
+            .select('error_stage, created_at')
+            .eq('user_id', user.id)
+            .gte('created_at', since)
+            .order('created_at', { ascending: false })
+            .limit(10),
+    ])
+
+    if (processedError) throw processedError
+    if (transactionError) throw transactionError
+    if (errorsError) throw errorsError
+
+    const errorCounts = (recentErrors || []).reduce((acc: Record<string, number>, row) => {
+        acc[row.error_stage] = (acc[row.error_stage] || 0) + 1
+        return acc
+    }, {})
+
+    return {
+        processedLast24h: processedCount ?? 0,
+        insertedLast24h: transactionCount ?? 0,
+        errorCounts,
+        lastErrorAt: recentErrors?.[0]?.created_at ?? null,
+    }
 }

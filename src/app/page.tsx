@@ -1,16 +1,20 @@
 import { createClient } from '@/utils/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { fetchDailySpending, fetchDashboardStats, fetchExpenses } from '@/app/actions/expenses'
+import { fetchDailySpending, fetchDashboardStats, fetchExpenses, fetchSyncDiagnostics } from '@/app/actions/expenses'
+import { AppShell } from '@/components/app-shell'
 import { AutoSync } from '@/components/auto-sync'
 import { DailySpendingChart } from '@/components/daily-spending-chart'
+import { MetricCard } from '@/components/metric-card'
+import { SectionPanel } from '@/components/section-panel'
+import { SidebarNav } from '@/components/sidebar-nav'
+import { StatusPill } from '@/components/status-pill'
 import { SyncButton } from '@/components/sync-button'
 import { SignOutButton } from '@/components/sign-out-button'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
-import { Wallet, CreditCard, Mail, CalendarRange, LineChart as LineChartIcon } from "lucide-react"
+import { Wallet, CreditCard, Mail, CalendarRange, LineChart as LineChartIcon, Sparkles, ArrowUpRight } from "lucide-react"
 
 const dateFilterOptions = [
   { label: '7D', value: 7 },
@@ -47,15 +51,24 @@ export default async function Dashboard({
     processedEmailCount: 0,
     topCategory: 'None',
   }
+  let syncDiagnostics = {
+    processedLast24h: 0,
+    insertedLast24h: 0,
+    errorCounts: {} as Record<string, number>,
+    lastErrorAt: null as string | null,
+  }
+
   try {
-    const [fetchedExpenses, fetchedStats, fetchedDailySpending] = await Promise.all([
+    const [fetchedExpenses, fetchedStats, fetchedDailySpending, fetchedSyncDiagnostics] = await Promise.all([
       fetchExpenses(days),
       fetchDashboardStats(days),
       fetchDailySpending(days),
+      fetchSyncDiagnostics(),
     ])
     expenses = fetchedExpenses
     stats = fetchedStats
     dailySpending = fetchedDailySpending
+    syncDiagnostics = fetchedSyncDiagnostics
   } catch (err) {
     console.warn("Could not fetch expenses yet.", err)
   }
@@ -69,29 +82,42 @@ export default async function Dashboard({
   }, null)
 
   return (
-    <div className="flex min-h-screen w-full flex-col bg-slate-50 dark:bg-slate-950">
-      <header className="sticky top-0 z-30 flex h-16 items-center gap-4 border-b bg-white/80 dark:bg-slate-950/80 px-4 backdrop-blur sm:px-6">
-        <div className="flex flex-1 items-center gap-2 font-semibold">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-sm">
-            <Wallet className="h-4 w-4" />
-          </div>
-          <span className="text-xl tracking-tight text-slate-900 dark:text-white">ExpenseTracker</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <SyncButton />
-          <SignOutButton />
-        </div>
-      </header>
-
-      <main className="flex flex-1 flex-col gap-4 p-4 md:gap-8 md:p-8 max-w-7xl mx-auto w-full">
-        <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:flex-row sm:items-center sm:justify-between">
+    <AppShell
+      sidebar={<SidebarNav currentPath="/" />}
+      header={
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Date Range</p>
-            <p className="text-xs text-slate-500">
-              Dashboard data is currently filtered to the last {days === 'all' ? 'all available' : `${days} days`}.
+            <p className="text-[0.72rem] font-medium uppercase tracking-[0.28em] text-muted-foreground">Digital Curator Mode</p>
+            <div className="mt-2 flex items-center gap-3">
+              <h1 className="text-2xl font-semibold text-foreground md:text-3xl">Spending command center</h1>
+              <StatusPill tone="success">Live inbox intelligence</StatusPill>
+            </div>
+            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+              Review recent movement, daily rhythm, and ingestion health without leaving the executive overview.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex items-center gap-3 self-start lg:self-auto">
+            <SyncButton />
+            <SignOutButton />
+          </div>
+        </div>
+      }
+    >
+      <section className="grid gap-5 xl:grid-cols-[1.35fr_0.95fr]">
+        <div className="rounded-[1.75rem] bg-primary px-6 py-6 text-primary-foreground shadow-[0_26px_55px_rgba(1,27,62,0.22)]">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-[0.72rem] font-medium uppercase tracking-[0.26em] text-white/70">Overview</p>
+              <h2 className="mt-3 text-3xl font-semibold">Quietly premium financial visibility.</h2>
+              <p className="mt-3 max-w-xl text-sm text-white/72">
+                Dashboard data is filtered to the last {days === 'all' ? 'all available' : `${days} days`}, while Gmail sync continues using the latest inbox window.
+              </p>
+            </div>
+            <div className="hidden rounded-[1.5rem] bg-white/10 p-3 text-white/80 md:block">
+              <Sparkles className="h-6 w-6" />
+            </div>
+          </div>
+          <div className="mt-6 flex flex-wrap gap-2">
             {dateFilterOptions.map((option) => {
               const isActive = option.value === days
               const href = option.value === 'all' ? '/' : `/?days=${option.value}`
@@ -100,10 +126,10 @@ export default async function Dashboard({
                 <Link
                   key={option.label}
                   href={href}
-                  className={`inline-flex items-center rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                  className={`inline-flex items-center rounded-full px-4 py-2 text-sm font-medium transition-colors ${
                     isActive
-                      ? 'border-indigo-600 bg-indigo-600 text-white'
-                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+                      ? 'bg-white text-primary'
+                      : 'bg-white/10 text-white/78 hover:bg-white/16'
                   }`}
                 >
                   {option.label}
@@ -112,213 +138,178 @@ export default async function Dashboard({
             })}
           </div>
         </div>
-
         <AutoSync />
+      </section>
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-xl border bg-white text-slate-950 shadow-sm dark:bg-slate-900 dark:border-slate-800 transition-all hover:shadow-md">
-            <div className="flex flex-row items-center justify-between space-y-0 p-6 pb-2">
-              <h3 className="tracking-tight text-sm font-medium">Total Spent</h3>
-              <Wallet className="h-4 w-4 text-muted-foreground opacity-70" />
-            </div>
-            <div className="p-6 pt-0">
-              <div className="text-3xl font-bold tracking-tight">Rs.{stats.totalSpent.toFixed(2)}</div>
-              <p className="text-xs text-emerald-600 mt-1 font-medium bg-emerald-50 w-fit px-2 py-0.5 rounded-full">
-                Within selected range
-              </p>
-            </div>
+      <section className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          label="Total Spent"
+          value={`Rs.${stats.totalSpent.toFixed(2)}`}
+          icon={<Wallet className="h-4 w-4" />}
+          note="Within selected range"
+          tone="success"
+        />
+        <MetricCard
+          label="Parsed Transactions"
+          value={stats.transactionCount}
+          icon={<Mail className="h-4 w-4" />}
+          note="Saved to Supabase"
+        />
+        <MetricCard
+          label="Emails Used"
+          value={stats.processedEmailCount}
+          icon={<CalendarRange className="h-4 w-4" />}
+          note="Ingestion history"
+        />
+        <MetricCard
+          label="Top Category"
+          value={stats.topCategory}
+          icon={<CreditCard className="h-4 w-4" />}
+          note="Highest frequency"
+          tone="attention"
+        />
+      </section>
+
+      <SectionPanel
+        title="Daily View"
+        description="A clean read on how spending accumulates across the selected range."
+        action={
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <LineChartIcon className="h-4 w-4" />
+            <span>Daily spend</span>
           </div>
-
-          <div className="rounded-xl border bg-white text-slate-950 shadow-sm dark:bg-slate-900 dark:border-slate-800 transition-all hover:shadow-md">
-            <div className="flex flex-row items-center justify-between space-y-0 p-6 pb-2">
-              <h3 className="tracking-tight text-sm font-medium">Parsed Transactions</h3>
-              <Mail className="h-4 w-4 text-muted-foreground opacity-70" />
-            </div>
-            <div className="p-6 pt-0">
-              <div className="text-3xl font-bold tracking-tight">{stats.transactionCount}</div>
-              <p className="text-xs text-muted-foreground mt-1">
-                Saved to Supabase
-              </p>
-            </div>
+        }
+      >
+        <div className="grid gap-6 lg:grid-cols-[1.8fr_0.95fr]">
+          <div>
+            {dailySpending.length === 0 ? (
+              <div className="flex h-72 items-center justify-center rounded-[1.5rem] bg-muted text-sm text-muted-foreground">
+                No daily spending data yet for this range.
+              </div>
+            ) : (
+              <DailySpendingChart data={dailySpending} />
+            )}
           </div>
-
-          <div className="rounded-xl border bg-white text-slate-950 shadow-sm dark:bg-slate-900 dark:border-slate-800 transition-all hover:shadow-md">
-            <div className="flex flex-row items-center justify-between space-y-0 p-6 pb-2">
-              <h3 className="tracking-tight text-sm font-medium">Emails Used</h3>
-              <CalendarRange className="h-4 w-4 text-muted-foreground opacity-70" />
+          <div className="grid gap-4 content-start">
+            <div className="rounded-[1.5rem] bg-muted p-5">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Average Per Day</p>
+              <p className="mt-3 text-2xl font-semibold text-foreground">Rs.{dailyAverage.toFixed(2)}</p>
             </div>
-            <div className="p-6 pt-0">
-              <div className="text-3xl font-bold tracking-tight">{stats.processedEmailCount}</div>
-              <p className="text-xs text-sky-600 mt-1 font-medium bg-sky-50 w-fit px-2 py-0.5 rounded-full">
-                Based on `processed_emails`
+            <div className="rounded-[1.5rem] bg-muted p-5">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Highest Spend Day</p>
+              <p className="mt-3 text-lg font-semibold text-foreground">{busiestDay?.date ?? 'No data'}</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {busiestDay ? `Rs.${busiestDay.amount.toFixed(2)} across ${busiestDay.transactions} transaction(s)` : 'Add more synced data to see trends.'}
               </p>
             </div>
-          </div>
-
-          <div className="rounded-xl border bg-white text-slate-950 shadow-sm dark:bg-slate-900 dark:border-slate-800 transition-all hover:shadow-md">
-            <div className="flex flex-row items-center justify-between space-y-0 p-6 pb-2">
-              <h3 className="tracking-tight text-sm font-medium">Top Category</h3>
-              <CreditCard className="h-4 w-4 text-muted-foreground opacity-70" />
-            </div>
-            <div className="p-6 pt-0">
-              <div className="text-3xl font-bold tracking-tight capitalize truncate max-w-full">{stats.topCategory}</div>
-              <p className="text-xs text-rose-600 mt-1 font-medium bg-rose-50 w-fit px-2 py-0.5 rounded-full">
-                Highest frequency
-              </p>
+            <div className="rounded-[1.5rem] bg-muted p-5">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Active Days</p>
+              <p className="mt-3 text-2xl font-semibold text-foreground">{dailySpending.length}</p>
             </div>
           </div>
         </div>
+      </SectionPanel>
 
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
-          <Card className="col-span-7 border-slate-200 shadow-sm dark:border-slate-800">
-            <CardHeader className="border-b border-slate-100 bg-slate-50/50 dark:border-slate-800 dark:bg-slate-900/50">
-              <div className="flex items-center justify-between gap-4">
-                <div className="grid gap-1">
-                  <CardTitle className="text-lg">Daily View</CardTitle>
-                  <CardDescription>
-                    Spending trend for the selected date range.
-                  </CardDescription>
+      <section className="grid gap-5 xl:grid-cols-[1.45fr_0.95fr]">
+        <SectionPanel
+          title="Recent Transactions"
+          description="Latest parsed transactions, structured from your Gmail-linked receipts and bank alerts."
+          className="min-w-0"
+        >
+          {expenses.length === 0 ? (
+            <div className="flex min-h-72 items-center justify-center rounded-[1.5rem] bg-muted text-sm text-muted-foreground">
+              No expenses found yet. Use Sync Emails to populate the ledger.
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead>Merchant</TableHead>
+                  <TableHead>Category</TableHead>
+                  <TableHead>Mode</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {expenses.map((expense) => (
+                  <TableRow key={expense.id}>
+                    <TableCell className="font-medium text-foreground">{expense.merchant}</TableCell>
+                    <TableCell>
+                      <Badge variant="secondary" className="bg-accent px-2.5 py-1 text-[0.72rem] text-primary hover:bg-accent">
+                        {expense.category}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">{expense.payment_method ?? 'Other'}</TableCell>
+                    <TableCell className="text-muted-foreground">{expense.date}</TableCell>
+                    <TableCell className="text-right font-medium text-foreground">Rs.{expense.amount.toFixed(2)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </SectionPanel>
+
+        <SectionPanel
+          title="System Health"
+          description="Operational readout for inbox ingestion and the quality of the parsed transaction stream."
+        >
+          <div className="space-y-5">
+            <div className="rounded-[1.5rem] bg-muted p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Parsed vs consumed</p>
+                  <p className="text-xs text-muted-foreground">How much of the processed email stream made it into transactions.</p>
                 </div>
-                <div className="flex items-center gap-2 text-slate-500">
-                  <LineChartIcon className="h-4 w-4" />
-                  <span className="text-xs font-medium">Daily spend</span>
-                </div>
+                <StatusPill tone="success">
+                  {stats.processedEmailCount > 0 ? `${Math.min(100, Math.round((stats.transactionCount / stats.processedEmailCount) * 100))}%` : '0%'}
+                </StatusPill>
               </div>
-            </CardHeader>
-            <CardContent className="grid gap-6 p-6 lg:grid-cols-[2fr_1fr]">
-              <div>
-                {dailySpending.length === 0 ? (
-                  <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-900/40">
-                    No daily spending data yet for this range.
-                  </div>
+              <div className="mt-4 h-3 overflow-hidden rounded-full bg-background">
+                <div
+                  className="h-full rounded-full bg-linear-to-r from-primary to-[color:var(--chart-3)]"
+                  style={{
+                    width: stats.processedEmailCount > 0
+                      ? `${Math.min(100, (stats.transactionCount / stats.processedEmailCount) * 100)}%`
+                      : '0%'
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-1">
+              <div className="rounded-[1.5rem] bg-muted p-5">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-foreground">Last 24h ingestion</p>
+                  <ArrowUpRight className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <p className="mt-3 text-2xl font-semibold text-foreground">
+                  {syncDiagnostics.insertedLast24h} / {syncDiagnostics.processedLast24h}
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">Inserted transactions vs processed emails over the last 24 hours.</p>
+              </div>
+              <div className="rounded-[1.5rem] bg-muted p-5">
+                <p className="text-sm font-medium text-foreground">Latest errors</p>
+                {Object.keys(syncDiagnostics.errorCounts).length === 0 ? (
+                  <p className="mt-3 text-sm text-muted-foreground">No ingestion errors recorded in the last 24 hours.</p>
                 ) : (
-                  <DailySpendingChart data={dailySpending} />
+                  <div className="mt-3 space-y-2">
+                    {Object.entries(syncDiagnostics.errorCounts).map(([stage, count]) => (
+                      <div key={stage} className="flex items-center justify-between rounded-xl bg-card px-3 py-2 text-sm">
+                        <span className="text-foreground">{stage}</span>
+                        <StatusPill tone="attention">{count}</StatusPill>
+                      </div>
+                    ))}
+                    {syncDiagnostics.lastErrorAt ? (
+                      <p className="pt-1 text-xs text-muted-foreground">Last error at {new Date(syncDiagnostics.lastErrorAt).toLocaleString()}</p>
+                    ) : null}
+                  </div>
                 )}
               </div>
-              <div className="grid gap-4 content-start">
-                <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Average Per Day</p>
-                  <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">
-                    Rs.{dailyAverage.toFixed(2)}
-                  </p>
-                </div>
-                <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Highest Spend Day</p>
-                  <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
-                    {busiestDay?.date ?? 'No data'}
-                  </p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {busiestDay ? `Rs.${busiestDay.amount.toFixed(2)} across ${busiestDay.transactions} transaction(s)` : 'Add more synced data to see trends.'}
-                  </p>
-                </div>
-                <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Active Days</p>
-                  <p className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">
-                    {dailySpending.length}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="col-span-4 shadow-sm border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden pointer-events-auto max-h-[600px] overflow-y-auto">
-            <CardHeader className="flex flex-row items-center border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 px-6 py-4">
-              <div className="grid gap-1">
-                <CardTitle className="text-lg">Recent Expenses</CardTitle>
-                <CardDescription>
-                  Automatically synced from your Gmail account.
-                </CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              {expenses.length === 0 ? (
-                <div className="p-8 text-center text-slate-500">
-                  <Mail className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                  <p>No expenses found yet. Hit 'Sync Emails' to parse them!</p>
-                </div>
-              ) : (
-                <Table>
-                  <TableHeader className="bg-slate-50/50 dark:bg-slate-900/50">
-                    <TableRow className="hover:bg-transparent border-slate-100 dark:border-slate-800">
-                      <TableHead className="pl-6 h-10 text-xs font-semibold text-slate-500">Merchant</TableHead>
-                      <TableHead className="h-10 text-xs font-semibold text-slate-500">Category</TableHead>
-                      <TableHead className="h-10 text-xs font-semibold text-slate-500">Mode</TableHead>
-                      <TableHead className="h-10 text-xs font-semibold text-slate-500">Date</TableHead>
-                      <TableHead className="text-right pr-6 h-10 text-xs font-semibold text-slate-500">Amount</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {expenses.map((expense) => (
-                      <TableRow key={expense.id} className="border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                        <TableCell className="pl-6 font-medium text-sm capitalize">{expense.merchant}</TableCell>
-                        <TableCell>
-                          <Badge variant="secondary" className="font-normal text-xs bg-indigo-50 text-indigo-700 hover:bg-indigo-50">
-                            {expense.category}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm">{expense.payment_method ?? 'Other'}</TableCell>
-                        <TableCell className="text-muted-foreground text-sm">{expense.date}</TableCell>
-                        <TableCell className="text-right pr-6 font-medium text-slate-900 dark:text-slate-100">Rs.{expense.amount.toFixed(2)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="col-span-3 shadow-sm border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-            <CardHeader className="bg-slate-50/50 dark:bg-slate-900/50 border-b border-slate-100 dark:border-slate-800">
-              <CardTitle className="text-lg">AI Categorization</CardTitle>
-              <CardDescription>
-                LLM confidence scores on extracted entities
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="p-6">
-              <div className="space-y-6">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                      <span className="font-medium">Amount Extracted</span>
-                    </div>
-                    <span className="text-muted-foreground">{expenses.length > 0 ? 'Live' : '0%'}</span>
-                  </div>
-                  <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                    <div className="h-full bg-emerald-500 rounded-full" style={{ width: expenses.length > 0 ? "100%" : "0%" }}></div>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
-                      <span className="font-medium">Emails Consumed</span>
-                    </div>
-                    <span className="text-muted-foreground">{stats.processedEmailCount}</span>
-                  </div>
-                  <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-indigo-500 rounded-full"
-                      style={{
-                        width: stats.processedEmailCount > 0
-                          ? `${Math.min(100, (stats.transactionCount / stats.processedEmailCount) * 100)}%`
-                          : "0%"
-                      }}
-                    ></div>
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    Sync uses up to 14 days of Gmail search data by default. The date filter above changes the dashboard view, not the Gmail sync window.
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      </main>
-    </div>
+            </div>
+          </div>
+        </SectionPanel>
+      </section>
+    </AppShell>
   )
 }

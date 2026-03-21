@@ -71,22 +71,22 @@ export function AutoSync() {
     }, [router])
 
     return (
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="rounded-[1.75rem] bg-card/92 p-5 shadow-[0_24px_50px_rgba(1,27,62,0.06)] ring-1 ring-border">
             <div className="flex items-center justify-between gap-3">
                 <div>
-                    <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Auto Sync</p>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-sm font-medium text-foreground">Auto Sync</p>
+                    <p className="text-xs text-muted-foreground">
                         While this page is open, Gmail sync runs every 2 minutes.
                     </p>
                 </div>
-                <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                <span className="rounded-full bg-secondary/12 px-2.5 py-1 text-xs font-medium text-secondary">
                     Active
                 </span>
             </div>
-            <p className="mt-3 text-xs text-slate-500">
+            <p className="mt-4 text-xs text-muted-foreground">
                 Last background check: {lastSyncedAt ?? 'Waiting for first run'}
             </p>
-            <p className="mt-1 text-xs text-slate-500">
+            <p className="mt-1 text-xs text-muted-foreground">
                 Status: {lastStatus}
             </p>
         </div>
