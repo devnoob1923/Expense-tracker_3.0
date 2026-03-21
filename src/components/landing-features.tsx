@@ -21,7 +21,7 @@ const features = [
   },
   {
     title: "Automatic Sync",
-    description: "Continuous background sync ensures your dashboard is always reflecting your latest movement.",
+    description: "Manual and assisted inbox sync keep your dashboard aligned with the latest parsed transaction activity.",
     icon: Sparkles,
     color: "text-amber-500",
   },
