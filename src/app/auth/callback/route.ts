@@ -43,7 +43,7 @@ export async function GET(request: Request) {
                 return NextResponse.redirect(`${origin}/login?error=missing_provider_token`)
             }
 
-            return NextResponse.redirect(`${origin}/`)
+            return NextResponse.redirect(`${origin}/dashboard`)
         }
     }
 

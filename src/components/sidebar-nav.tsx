@@ -4,13 +4,13 @@ import { Activity, CalendarRange, CreditCard, LayoutDashboard, Mail, ReceiptText
 import { cn } from '@/lib/utils'
 
 const navItems = [
-    { label: 'Dashboard', icon: LayoutDashboard, href: '/' },
-    { label: 'Email Sync', icon: Mail, href: '/' },
+    { label: 'Dashboard', icon: LayoutDashboard, href: '/dashboard' },
+    { label: 'Email Sync', icon: Mail, href: '/dashboard' },
     { label: 'Transactions', icon: ReceiptText, href: '/transactions' },
-    { label: 'Insights', icon: Activity, href: '/' },
+    { label: 'Insights', icon: Activity, href: '/dashboard' },
 ]
 
-export function SidebarNav({ currentPath = '/' }: { currentPath?: string }) {
+export function SidebarNav({ currentPath = '/dashboard' }: { currentPath?: string }) {
     return (
         <div className="flex h-full flex-col">
             <div className="px-3 pb-8 pt-2">
