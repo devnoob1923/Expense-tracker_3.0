@@ -47,6 +47,7 @@ export default async function Dashboard({
   let dailySpending: { date: string; amount: number; transactions: number }[] = []
   let stats = {
     totalSpent: 0,
+    todaySpent: 0,
     transactionCount: 0,
     processedEmailCount: 0,
     topCategory: 'None',
@@ -141,7 +142,14 @@ export default async function Dashboard({
         <AutoSync />
       </section>
 
-      <section className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-5 sm:grid-cols-2 xl:grid-cols-5">
+        <MetricCard
+          label="Today's Spend"
+          value={`Rs.${stats.todaySpent.toFixed(2)}`}
+          icon={<CalendarRange className="h-4 w-4" />}
+          note="Transactions dated today"
+          tone="attention"
+        />
         <MetricCard
           label="Total Spent"
           value={`Rs.${stats.totalSpent.toFixed(2)}`}

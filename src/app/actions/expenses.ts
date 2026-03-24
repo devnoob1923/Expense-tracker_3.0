@@ -28,6 +28,12 @@ const TransactionExtractionSchema = z.object({
 
 const rateLimitMap = new Map<string, number>()
 
+type SyncSource = 'manual' | 'auto'
+
+type SyncExpensesOptions = {
+    source?: SyncSource
+}
+
 function getDateRangeStart(days: number | 'all') {
     if (days === 'all') return null
     const start = new Date()
@@ -194,7 +200,8 @@ function normalizeMerchant(rawMerchant: string) {
         .trim()
 }
 
-export async function syncExpenses() {
+export async function syncExpenses(options: SyncExpensesOptions = {}) {
+    const source = options.source ?? 'manual'
     const supabase = await createClient()
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
@@ -204,6 +211,20 @@ export async function syncExpenses() {
     const now = Date.now()
     const lastSync = rateLimitMap.get(user.id) || 0
     if (now - lastSync < 60000) {
+        if (source === 'auto') {
+            return {
+                message: 'Cooling down before the next automatic inbox check.',
+                count: 0,
+                diagnostics: {
+                    matchingEmails: 0,
+                    candidateEmails: 0,
+                    inserted: 0,
+                    skipped: 0,
+                    failed: 0,
+                },
+            }
+        }
+
         throw new Error('Rate limit exceeded. Please wait a minute before syncing again.')
     }
 
@@ -533,7 +554,7 @@ export async function fetchDashboardStats(days: number | 'all' = 14) {
 
     let transactionsQuery = adminDb
         .from('transactions')
-        .select('transaction_id, category, amount', { count: 'exact' })
+        .select('transaction_id, category, amount, date', { count: 'exact' })
         .eq('user_id', user.id)
 
     let processedEmailsQuery = adminDb
@@ -555,6 +576,14 @@ export async function fetchDashboardStats(days: number | 'all' = 14) {
     if (processedEmailsError) throw processedEmailsError
 
     const totalSpent = (transactions || []).reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
+    const todayDate = new Date().toISOString().slice(0, 10)
+    const todaySpent = (transactions || []).reduce((sum, row) => {
+        if (row.date === todayDate) {
+            return sum + (Number(row.amount) || 0)
+        }
+
+        return sum
+    }, 0)
     const categoryCounts = (transactions || []).reduce((acc: Record<string, number>, row) => {
         acc[row.category] = (acc[row.category] || 0) + 1
         return acc
@@ -566,6 +595,7 @@ export async function fetchDashboardStats(days: number | 'all' = 14) {
 
     return {
         totalSpent,
+        todaySpent,
         transactionCount: transactionCount ?? 0,
         processedEmailCount: processedEmailCount ?? 0,
         topCategory,

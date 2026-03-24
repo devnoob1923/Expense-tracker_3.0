@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-const AUTO_SYNC_INTERVAL_MS = 120000
+const AUTO_SYNC_INTERVAL_MS = 65000
 
 export function AutoSync() {
     const router = useRouter()
@@ -76,7 +76,7 @@ export function AutoSync() {
                 <div>
                     <p className="text-sm font-medium text-foreground">Auto Sync</p>
                     <p className="text-xs text-muted-foreground">
-                        While this page is open, Gmail sync runs every 2 minutes.
+                        While this page is open, Gmail sync runs about every minute.
                     </p>
                 </div>
                 <span className="rounded-full bg-secondary/12 px-2.5 py-1 text-xs font-medium text-secondary">
