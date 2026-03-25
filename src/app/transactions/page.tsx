@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { Filter, ReceiptText, Search, Wallet } from 'lucide-react'
 
-import { fetchExpenses } from '@/app/actions/expenses'
+import { fetchExpenses, type ExpenseRecord } from '@/app/actions/expenses'
 import { AppShell } from '@/components/app-shell'
 import { SectionPanel } from '@/components/section-panel'
 import { SidebarNav } from '@/components/sidebar-nav'
@@ -40,12 +40,21 @@ export default async function TransactionsPage({
       ? 'all'
       : 30
 
-  let expenses: any[] = []
+  let expenses: ExpenseRecord[] = []
   try {
     expenses = await fetchExpenses(days)
   } catch (err) {
     console.warn('Could not fetch transactions yet.', err)
   }
+  const summary = expenses.reduce(
+    (acc, expense) => {
+      acc.totalValue += Number(expense.amount) || 0
+      if (expense.status === 'confirmed') acc.confirmedCount += 1
+      if (expense.status === 'needs_review') acc.reviewCount += 1
+      return acc
+    },
+    { totalValue: 0, confirmedCount: 0, reviewCount: 0 }
+  )
 
   return (
     <AppShell
@@ -93,6 +102,7 @@ export default async function TransactionsPage({
                 <Link
                   key={option.label}
                   href={href}
+                  aria-current={isActive ? 'page' : undefined}
                   className={`inline-flex items-center rounded-full px-4 py-2 text-sm font-medium transition-colors ${
                     isActive
                       ? 'bg-primary text-primary-foreground'
@@ -118,17 +128,17 @@ export default async function TransactionsPage({
         <div className="rounded-[1.5rem] bg-card/92 p-5 shadow-[0_24px_50px_rgba(1,27,62,0.06)] ring-1 ring-border">
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Total Value</p>
           <p className="mt-4 text-3xl font-semibold text-foreground">
-            Rs.{expenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0).toFixed(2)}
+            Rs.{summary.totalValue.toFixed(2)}
           </p>
         </div>
         <div className="rounded-[1.5rem] bg-card/92 p-5 shadow-[0_24px_50px_rgba(1,27,62,0.06)] ring-1 ring-border">
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Review Status</p>
           <div className="mt-4 flex items-center gap-2">
             <StatusPill tone="success">
-              {expenses.filter((expense) => expense.status === 'confirmed').length} confirmed
+              {summary.confirmedCount} confirmed
             </StatusPill>
             <StatusPill tone="attention">
-              {expenses.filter((expense) => expense.status === 'needs_review').length} review
+              {summary.reviewCount} review
             </StatusPill>
           </div>
         </div>
@@ -149,38 +159,64 @@ export default async function TransactionsPage({
             No transactions available for this range yet.
           </div>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead>Merchant</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead>Mode</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {expenses.map((expense) => (
-                <TableRow key={expense.id}>
-                  <TableCell className="font-medium text-foreground">{expense.merchant}</TableCell>
-                  <TableCell>
-                    <Badge variant="secondary" className="bg-accent px-2.5 py-1 text-[0.72rem] text-primary hover:bg-accent">
-                      {expense.category}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">{expense.payment_method ?? 'Other'}</TableCell>
-                  <TableCell className="text-muted-foreground">{expense.date}</TableCell>
-                  <TableCell>
-                    <StatusPill tone={expense.status === 'needs_review' ? 'attention' : 'success'}>
-                      {expense.status ?? 'confirmed'}
-                    </StatusPill>
-                  </TableCell>
-                  <TableCell className="text-right font-medium text-foreground">Rs.{expense.amount.toFixed(2)}</TableCell>
+          <>
+          <div className="grid gap-3 md:hidden">
+            {expenses.map((expense) => (
+              <article key={expense.id} className="rounded-[1.25rem] bg-muted p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-medium text-foreground">{expense.merchant}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">{expense.date}</p>
+                  </div>
+                  <p className="text-right font-medium text-foreground">Rs.{expense.amount.toFixed(2)}</p>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary" className="bg-accent px-2.5 py-1 text-[0.72rem] text-primary hover:bg-accent">
+                    {expense.category}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">{expense.payment_method ?? 'Other'}</span>
+                  <StatusPill tone={expense.status === 'needs_review' ? 'attention' : 'success'}>
+                    {expense.status ?? 'confirmed'}
+                  </StatusPill>
+                </div>
+              </article>
+            ))}
+          </div>
+          <div className="hidden overflow-x-auto md:block">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead>Merchant</TableHead>
+                  <TableHead>Category</TableHead>
+                  <TableHead>Mode</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {expenses.map((expense) => (
+                  <TableRow key={expense.id}>
+                    <TableCell className="font-medium text-foreground">{expense.merchant}</TableCell>
+                    <TableCell>
+                      <Badge variant="secondary" className="bg-accent px-2.5 py-1 text-[0.72rem] text-primary hover:bg-accent">
+                        {expense.category}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">{expense.payment_method ?? 'Other'}</TableCell>
+                    <TableCell className="text-muted-foreground">{expense.date}</TableCell>
+                    <TableCell>
+                      <StatusPill tone={expense.status === 'needs_review' ? 'attention' : 'success'}>
+                        {expense.status ?? 'confirmed'}
+                      </StatusPill>
+                    </TableCell>
+                    <TableCell className="text-right font-medium text-foreground">Rs.{expense.amount.toFixed(2)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          </>
         )}
       </SectionPanel>
     </AppShell>

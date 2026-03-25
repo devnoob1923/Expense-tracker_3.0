@@ -2,9 +2,12 @@
 
 import { createClient } from '@/utils/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
+import { createHash } from 'crypto'
 import { gmail_v1, google } from 'googleapis'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { z } from 'zod'
+import { buildDailySpendingSeries } from '@/lib/expense-series'
+import { decryptSecret } from '@/lib/token-crypto'
 
 const TransactionExtractionSchema = z.object({
     merchant: z.string().min(1, 'Merchant is required'),
@@ -26,12 +29,37 @@ const TransactionExtractionSchema = z.object({
     confidence: z.number().min(0).max(1).default(0.85),
 })
 
-const rateLimitMap = new Map<string, number>()
-
 type SyncSource = 'manual' | 'auto'
 
 type SyncExpensesOptions = {
     source?: SyncSource
+}
+
+export type ExpenseRecord = {
+    id: string
+    merchant: string
+    category: string
+    amount: number
+    currency: string
+    date: string
+    payment_method: string | null
+    description: string | null
+    status: string | null
+    confidence: number | null
+}
+
+export type SyncDiagnostics = {
+    matchingEmails: number
+    candidateEmails: number
+    inserted: number
+    skipped: number
+    failed: number
+}
+
+export type SyncExpensesResult = {
+    message: string
+    count: number
+    diagnostics: SyncDiagnostics
 }
 
 function getDateRangeStart(days: number | 'all') {
@@ -44,6 +72,10 @@ function getDateRangeStart(days: number | 'all') {
 
 function decodeBase64Url(input: string) {
     return Buffer.from(input.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8')
+}
+
+function hashText(value: string) {
+    return createHash('sha256').update(value).digest('hex')
 }
 
 function stripHtml(html: string) {
@@ -88,6 +120,130 @@ function formatDate(value: string | number | Date) {
     const date = new Date(value)
     if (Number.isNaN(date.getTime())) return null
     return date.toISOString().slice(0, 10)
+}
+
+function summarizePayloadForLog(payload?: gmail_v1.Schema$MessagePart) {
+    if (!payload) return null
+
+    return {
+        mimeType: payload.mimeType ?? null,
+        filename: payload.filename ?? null,
+        partCount: payload.parts?.length ?? 0,
+        headerNames: (payload.headers ?? [])
+            .map((header) => header.name)
+            .filter(Boolean)
+            .slice(0, 12),
+    }
+}
+
+function summarizeEmailTextForLog(textContent: string) {
+    return {
+        sha256: hashText(textContent),
+        length: textContent.length,
+        preview: textContent.slice(0, 120),
+    }
+}
+
+function createSyncResult(message: string, diagnostics?: Partial<SyncDiagnostics>): SyncExpensesResult {
+    return {
+        message,
+        count: diagnostics?.inserted ?? 0,
+        diagnostics: {
+            matchingEmails: diagnostics?.matchingEmails ?? 0,
+            candidateEmails: diagnostics?.candidateEmails ?? 0,
+            inserted: diagnostics?.inserted ?? 0,
+            skipped: diagnostics?.skipped ?? 0,
+            failed: diagnostics?.failed ?? 0,
+        },
+    }
+}
+
+function buildDashboardStatsFromTransactions(params: {
+    transactions: Array<{ amount: number | string | null; category: string | null; date: string | null }>
+    processedEmailCount: number
+}) {
+    const totalSpent = params.transactions.reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
+    const todayDate = new Date().toISOString().slice(0, 10)
+    const todaySpent = params.transactions.reduce((sum, row) => {
+        if (row.date === todayDate) {
+            return sum + (Number(row.amount) || 0)
+        }
+
+        return sum
+    }, 0)
+    const categoryCounts = params.transactions.reduce((acc: Record<string, number>, row) => {
+        const category = row.category ?? 'Uncategorized'
+        acc[category] = (acc[category] || 0) + 1
+        return acc
+    }, {})
+
+    const topCategory = Object.keys(categoryCounts).length > 0
+        ? Object.keys(categoryCounts).reduce((a, b) => categoryCounts[a] > categoryCounts[b] ? a : b)
+        : 'None'
+
+    return {
+        totalSpent,
+        todaySpent,
+        transactionCount: params.transactions.length,
+        processedEmailCount: params.processedEmailCount,
+        topCategory,
+    }
+}
+
+async function claimSyncWindow(params: {
+    adminDb: any
+    userId: string
+    source: SyncSource
+}) {
+    const { data, error } = await (params.adminDb as any).rpc('claim_sync_cooldown', {
+        p_user_id: params.userId,
+        p_window_seconds: 60,
+    })
+
+    if (error) {
+        const isMissingRpc = error.message?.includes('claim_sync_cooldown') || error.code === 'PGRST202'
+        if (!isMissingRpc) {
+            throw error
+        }
+
+        return true
+    }
+
+    if (typeof data === 'boolean') {
+        return data
+    }
+
+    if (Array.isArray(data) && typeof data[0] === 'boolean') {
+        return data[0]
+    }
+
+    return true
+}
+
+function assertAiExtractionMatchesEmail(params: {
+    extracted: z.infer<typeof TransactionExtractionSchema>
+    sourceText: string
+    fallbackDate: string | null
+}) {
+    const normalizedSource = params.sourceText.toLowerCase()
+    const merchantTokens = params.extracted.merchant
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((token) => token.length >= 3)
+
+    const merchantMatched = merchantTokens.length > 0 && merchantTokens.some((token) => normalizedSource.includes(token))
+    const amountPatterns = [
+        params.extracted.amount.toFixed(2),
+        params.extracted.amount.toString(),
+        params.extracted.amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    ]
+    const amountMatched = amountPatterns.some((pattern) => normalizedSource.includes(pattern.toLowerCase()))
+    const dateMatched = Boolean(
+        (params.fallbackDate && params.extracted.date === params.fallbackDate) ||
+        normalizedSource.includes(params.extracted.date.toLowerCase())
+    )
+
+    return merchantMatched && amountMatched && dateMatched
 }
 
 function parseHdfcUpi(content: string, fallbackDate: string | null) {
@@ -208,30 +364,24 @@ export async function syncExpenses(options: SyncExpensesOptions = {}) {
         throw new Error('Unauthorized. You must be logged in.')
     }
 
-    const now = Date.now()
-    const lastSync = rateLimitMap.get(user.id) || 0
-    if (now - lastSync < 60000) {
-        if (source === 'auto') {
-            return {
-                message: 'Cooling down before the next automatic inbox check.',
-                count: 0,
-                diagnostics: {
-                    matchingEmails: 0,
-                    candidateEmails: 0,
-                    inserted: 0,
-                    skipped: 0,
-                    failed: 0,
-                },
-            }
-        }
-
-        throw new Error('Rate limit exceeded. Please wait a minute before syncing again.')
-    }
-
     const adminDb = createAdminClient(
         process.env.NEXT_PUBLIC_SUPABASE_URL!,
         process.env.SUPABASE_SERVICE_ROLE_KEY!
     )
+
+    const canSyncNow = await claimSyncWindow({
+        adminDb,
+        userId: user.id,
+        source,
+    })
+
+    if (!canSyncNow) {
+        return createSyncResult(
+            source === 'auto'
+                ? 'Cooling down before the next automatic inbox check.'
+                : 'A background sync just ran. Please wait a minute before syncing again.'
+        )
+    }
 
     const { data: tokenData, error: tokenError } = await adminDb
         .from('user_tokens')
@@ -244,9 +394,8 @@ export async function syncExpenses(options: SyncExpensesOptions = {}) {
     }
 
     const auth = new google.auth.OAuth2()
-    auth.setCredentials({ access_token: tokenData.provider_token })
+    auth.setCredentials({ access_token: decryptSecret(tokenData.provider_token) })
     const gmail = google.gmail({ version: 'v1', auth })
-    rateLimitMap.set(user.id, now)
 
     const oneWeekAgo = new Date()
     oneWeekAgo.setDate(oneWeekAgo.getDate() - 7)
@@ -281,7 +430,6 @@ export async function syncExpenses(options: SyncExpensesOptions = {}) {
         const response = await gmail.users.messages.list({ userId: 'me', q: query, maxResults: 100 })
         messages = response.data.messages || []
     } catch (err: any) {
-        rateLimitMap.delete(user.id)
         await logIngestionError({
             userId: user.id,
             errorStage: 'gmail_list',
@@ -292,17 +440,7 @@ export async function syncExpenses(options: SyncExpensesOptions = {}) {
     }
 
     if (messages.length === 0) {
-        return {
-            message: 'No new receipts found',
-            count: 0,
-            diagnostics: {
-                matchingEmails: 0,
-                candidateEmails: 0,
-                inserted: 0,
-                skipped: 0,
-                failed: 0,
-            },
-        }
+        return createSyncResult('No new receipts found')
     }
 
     const messageIds = messages.map((message) => message.id as string)
@@ -316,17 +454,9 @@ export async function syncExpenses(options: SyncExpensesOptions = {}) {
     const newMessages = messages.filter((message) => !processedIdSet.has(message.id as string))
 
     if (newMessages.length === 0) {
-        return {
-            message: 'All latest receipts are already synced.',
-            count: 0,
-            diagnostics: {
-                matchingEmails: messages.length,
-                candidateEmails: 0,
-                inserted: 0,
-                skipped: 0,
-                failed: 0,
-            },
-        }
+        return createSyncResult('All latest receipts are already synced.', {
+            matchingEmails: messages.length,
+        })
     }
 
     if (!process.env.GEMINI_API_KEY) {
@@ -370,8 +500,7 @@ If the email is not a transaction or amount/date are missing, return {"error":"n
     let successfulInserts = 0
     let skippedCount = 0
     let failedCount = 0
-
-    for (const msg of newMessages) {
+    const processMessage = async (msg: { id?: string | null }) => {
         const messageId = msg.id as string
 
         try {
@@ -394,10 +523,10 @@ If the email is not a transaction or amount/date are missing, return {"error":"n
                     errorStage: 'email_parse',
                     errorCode: 'missing_text_content',
                     errorMessage: 'No text/plain content available in Gmail payload.',
-                    rawPayload: payload,
+                    rawPayload: summarizePayloadForLog(payload),
                 })
                 skippedCount++
-                continue
+                return 'skipped' as const
             }
 
             const ruleBased = parseKnownTransaction(`${subject}\n${textContent}`, fallbackDate)
@@ -428,11 +557,11 @@ If the email is not a transaction or amount/date are missing, return {"error":"n
                         rawPayload: {
                             sender,
                             subject,
-                            textContent: textContent.substring(0, 1000),
+                            summary: summarizeEmailTextForLog(textContent),
                         },
                     })
                     skippedCount++
-                    continue
+                    return 'skipped' as const
                 }
 
                 if (!jsonOutput.date && fallbackDate) {
@@ -440,8 +569,36 @@ If the email is not a transaction or amount/date are missing, return {"error":"n
                 }
 
                 validatedTransaction = TransactionExtractionSchema.parse(jsonOutput)
+                const aiOutputMatchesEmail = assertAiExtractionMatchesEmail({
+                    extracted: validatedTransaction,
+                    sourceText: `${subject}\n${textContent}`,
+                    fallbackDate,
+                })
+
+                if (!aiOutputMatchesEmail) {
+                    await logIngestionError({
+                        userId: user.id,
+                        externalMessageId: messageId,
+                        errorStage: 'ai_extract',
+                        errorCode: 'unverified_ai_extraction',
+                        errorMessage: 'AI output could not be corroborated against the source email content.',
+                        rawPayload: {
+                            sender,
+                            subject,
+                            summary: summarizeEmailTextForLog(textContent),
+                        },
+                        metadata: {
+                            extracted_amount: validatedTransaction.amount,
+                            extracted_date: validatedTransaction.date,
+                            extracted_merchant: validatedTransaction.merchant,
+                        },
+                    })
+                    skippedCount++
+                    return 'skipped' as const
+                }
             }
             const normalizedMerchant = normalizeMerchant(validatedTransaction.merchant)
+            const transactionStatus = ruleBased && validatedTransaction.confidence >= 0.8 ? 'confirmed' : 'needs_review'
 
             const { error: insertError } = await adminDb.from('transactions').insert({
                 user_id: user.id,
@@ -456,9 +613,12 @@ If the email is not a transaction or amount/date are missing, return {"error":"n
                 payment_method: validatedTransaction.payment_method,
                 currency: validatedTransaction.currency,
                 confidence: validatedTransaction.confidence,
-                status: validatedTransaction.confidence >= 0.8 ? 'confirmed' : 'needs_review',
+                status: transactionStatus,
                 raw_extraction: {
-                    model_output: validatedTransaction,
+                    model_output: {
+                        ...validatedTransaction,
+                        extraction_method: ruleBased ? 'rule_based' : 'ai_assisted',
+                    },
                     extracted_at: new Date().toISOString(),
                 },
             })
@@ -472,9 +632,8 @@ If the email is not a transaction or amount/date are missing, return {"error":"n
                 message_id: messageId
             })
 
-            successfulInserts++
+            return 'inserted' as const
         } catch (err: any) {
-            failedCount++
             await logIngestionError({
                 userId: user.id,
                 externalMessageId: messageId,
@@ -482,13 +641,25 @@ If the email is not a transaction or amount/date are missing, return {"error":"n
                 errorCode: err?.code ?? 'transaction_insert_failed',
                 errorMessage: err?.message || 'Transaction ingestion failed.',
             })
+            return 'failed' as const
+        }
+    }
+
+    const batchSize = 3
+    for (let index = 0; index < newMessages.length; index += batchSize) {
+        const batch = newMessages.slice(index, index + batchSize)
+        const batchResults = await Promise.all(batch.map((message) => processMessage(message)))
+
+        for (const result of batchResults) {
+            if (result === 'inserted') successfulInserts++
+            if (result === 'failed') failedCount++
         }
     }
 
     return {
         message: successfulInserts > 0
             ? `Synced ${successfulInserts} transactions from ${newMessages.length} candidate emails.`
-            : `Found ${messages.length} matching emails, ${newMessages.length} new candidates, but 0 transactions were saved. Skipped ${skippedCount}, failed ${failedCount}. Check ingestion_errors in Supabase for details.`,
+            : `Found ${messages.length} matching emails, ${newMessages.length} new candidates, but 0 transactions were saved. Skipped ${skippedCount}, failed ${failedCount}. Check ingestion errors for details.`,
         count: successfulInserts,
         diagnostics: {
             matchingEmails: messages.length,
@@ -500,21 +671,15 @@ If the email is not a transaction or amount/date are missing, return {"error":"n
     }
 }
 
-export async function fetchExpenses(days: number | 'all' = 14) {
+export async function fetchExpenses(days: number | 'all' = 14): Promise<ExpenseRecord[]> {
     const supabase = await createClient()
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) throw new Error('Unauthorized')
 
-    const adminDb = createAdminClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.SUPABASE_SERVICE_ROLE_KEY!
-    )
-
     const rangeStart = getDateRangeStart(days)
-    let query = adminDb
+    let query: any = supabase
         .from('transactions')
         .select('transaction_id, merchant, category, amount, currency, date, payment_method, description, status, confidence')
-        .eq('user_id', user.id)
         .order('date', { ascending: false })
         .limit(200)
 
@@ -522,11 +687,33 @@ export async function fetchExpenses(days: number | 'all' = 14) {
         query = query.gte('date', rangeStart)
     }
 
-    const { data, error } = await query
+    let { data, error } = await query
+
+    if (error) {
+        const adminDb = createAdminClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.SUPABASE_SERVICE_ROLE_KEY!
+        )
+
+        let adminQuery: any = adminDb
+            .from('transactions')
+            .select('transaction_id, merchant, category, amount, currency, date, payment_method, description, status, confidence')
+            .eq('user_id', user.id)
+            .order('date', { ascending: false })
+            .limit(200)
+
+        if (rangeStart) {
+            adminQuery = adminQuery.gte('date', rangeStart)
+        }
+
+        const adminResult = await adminQuery
+        data = adminResult.data
+        error = adminResult.error
+    }
 
     if (error) throw error
 
-    return (data || []).map((transaction) => ({
+    return (data || []).map((transaction: any) => ({
         id: transaction.transaction_id,
         merchant: transaction.merchant ?? 'Unknown merchant',
         category: transaction.category,
@@ -552,76 +739,69 @@ export async function fetchDashboardStats(days: number | 'all' = 14) {
 
     const rangeStart = getDateRangeStart(days)
 
-    let transactionsQuery = adminDb
-        .from('transactions')
-        .select('transaction_id, category, amount, date', { count: 'exact' })
-        .eq('user_id', user.id)
+    const { data, error } = await adminDb.rpc('get_dashboard_stats', {
+        p_user_id: user.id,
+        p_range_start: rangeStart,
+    })
 
-    let processedEmailsQuery = adminDb
-        .from('processed_emails')
-        .select('id', { count: 'exact' })
-        .eq('user_id', user.id)
-
-    if (rangeStart) {
-        transactionsQuery = transactionsQuery.gte('date', rangeStart)
-        processedEmailsQuery = processedEmailsQuery.gte('processed_at', `${rangeStart}T00:00:00.000Z`)
-    }
-
-    const [{ data: transactions, count: transactionCount, error: transactionsError }, { count: processedEmailCount, error: processedEmailsError }] = await Promise.all([
-        transactionsQuery,
-        processedEmailsQuery,
-    ])
-
-    if (transactionsError) throw transactionsError
-    if (processedEmailsError) throw processedEmailsError
-
-    const totalSpent = (transactions || []).reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
-    const todayDate = new Date().toISOString().slice(0, 10)
-    const todaySpent = (transactions || []).reduce((sum, row) => {
-        if (row.date === todayDate) {
-            return sum + (Number(row.amount) || 0)
+    if (error) {
+        const isMissingRpc = error.message?.includes('get_dashboard_stats') || error.code === 'PGRST202'
+        if (!isMissingRpc) {
+            throw error
         }
 
-        return sum
-    }, 0)
-    const categoryCounts = (transactions || []).reduce((acc: Record<string, number>, row) => {
-        acc[row.category] = (acc[row.category] || 0) + 1
-        return acc
-    }, {})
+        let transactionsQuery = adminDb
+            .from('transactions')
+            .select('amount, category, date')
+            .eq('user_id', user.id)
 
-    const topCategory = Object.keys(categoryCounts).length > 0
-        ? Object.keys(categoryCounts).reduce((a, b) => categoryCounts[a] > categoryCounts[b] ? a : b)
-        : 'None'
+        let processedEmailsQuery = adminDb
+            .from('processed_emails')
+            .select('id', { count: 'exact', head: true })
+            .eq('user_id', user.id)
+
+        if (rangeStart) {
+            transactionsQuery = transactionsQuery.gte('date', rangeStart)
+            processedEmailsQuery = processedEmailsQuery.gte('processed_at', `${rangeStart}T00:00:00.000Z`)
+        }
+
+        const [{ data: transactions, error: transactionsError }, { count: processedEmailCount, error: processedEmailsError }] = await Promise.all([
+            transactionsQuery,
+            processedEmailsQuery,
+        ])
+
+        if (transactionsError) throw transactionsError
+        if (processedEmailsError) throw processedEmailsError
+
+        return buildDashboardStatsFromTransactions({
+            transactions: transactions ?? [],
+            processedEmailCount: processedEmailCount ?? 0,
+        })
+    }
+
+    const stats = Array.isArray(data) ? data[0] : data
+    if (!stats) {
+        return {
+            totalSpent: 0,
+            todaySpent: 0,
+            transactionCount: 0,
+            processedEmailCount: 0,
+            topCategory: 'None',
+        }
+    }
 
     return {
-        totalSpent,
-        todaySpent,
-        transactionCount: transactionCount ?? 0,
-        processedEmailCount: processedEmailCount ?? 0,
-        topCategory,
+        totalSpent: Number(stats.total_spent ?? 0),
+        todaySpent: Number(stats.today_spent ?? 0),
+        transactionCount: Number(stats.transaction_count ?? 0),
+        processedEmailCount: Number(stats.processed_email_count ?? 0),
+        topCategory: stats.top_category ?? 'None',
     }
 }
 
 export async function fetchDailySpending(days: number | 'all' = 14) {
     const expenses = await fetchExpenses(days)
-
-    const grouped = expenses.reduce((acc: Record<string, { amount: number; transactions: number }>, expense) => {
-        if (!acc[expense.date]) {
-            acc[expense.date] = { amount: 0, transactions: 0 }
-        }
-
-        acc[expense.date].amount += Number(expense.amount) || 0
-        acc[expense.date].transactions += 1
-        return acc
-    }, {})
-
-    return Object.entries(grouped)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([date, value]) => ({
-            date,
-            amount: Number(value.amount.toFixed(2)),
-            transactions: value.transactions,
-        }))
+    return buildDailySpendingSeries(expenses)
 }
 
 export async function fetchSyncDiagnostics() {
@@ -629,32 +809,51 @@ export async function fetchSyncDiagnostics() {
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) throw new Error('Unauthorized')
 
-    const adminDb = createAdminClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.SUPABASE_SERVICE_ROLE_KEY!
-    )
-
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 
-    const [{ count: processedCount, error: processedError }, { count: transactionCount, error: transactionError }, { data: recentErrors, error: errorsError }] = await Promise.all([
-        adminDb
+    let [{ count: processedCount, error: processedError }, { count: transactionCount, error: transactionError }, { data: recentErrors, error: errorsError }] = await Promise.all([
+        supabase
             .from('processed_emails')
             .select('id', { count: 'exact', head: true })
-            .eq('user_id', user.id)
             .gte('processed_at', since),
-        adminDb
+        supabase
             .from('transactions')
             .select('transaction_id', { count: 'exact', head: true })
-            .eq('user_id', user.id)
             .gte('created_at', since),
-        adminDb
+        supabase
             .from('ingestion_errors')
             .select('error_stage, created_at')
-            .eq('user_id', user.id)
             .gte('created_at', since)
             .order('created_at', { ascending: false })
             .limit(10),
     ])
+
+    if (processedError || transactionError || errorsError) {
+        const adminDb = createAdminClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.SUPABASE_SERVICE_ROLE_KEY!
+        )
+
+        ;[{ count: processedCount, error: processedError }, { count: transactionCount, error: transactionError }, { data: recentErrors, error: errorsError }] = await Promise.all([
+            adminDb
+                .from('processed_emails')
+                .select('id', { count: 'exact', head: true })
+                .eq('user_id', user.id)
+                .gte('processed_at', since),
+            adminDb
+                .from('transactions')
+                .select('transaction_id', { count: 'exact', head: true })
+                .eq('user_id', user.id)
+                .gte('created_at', since),
+            adminDb
+                .from('ingestion_errors')
+                .select('error_stage, created_at')
+                .eq('user_id', user.id)
+                .gte('created_at', since)
+                .order('created_at', { ascending: false })
+                .limit(10),
+        ])
+    }
 
     if (processedError) throw processedError
     if (transactionError) throw transactionError

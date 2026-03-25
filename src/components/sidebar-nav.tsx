@@ -5,9 +5,9 @@ import { cn } from '@/lib/utils'
 
 const navItems = [
     { label: 'Dashboard', icon: LayoutDashboard, href: '/dashboard' },
-    { label: 'Email Sync', icon: Mail, href: '/dashboard' },
     { label: 'Transactions', icon: ReceiptText, href: '/transactions' },
-    { label: 'Insights', icon: Activity, href: '/dashboard' },
+    { label: 'Email Sync', icon: Mail, href: '/dashboard#auto-sync' },
+    { label: 'Insights', icon: Activity, href: '/dashboard#daily-view' },
 ]
 
 export function SidebarNav({ currentPath = '/dashboard' }: { currentPath?: string }) {

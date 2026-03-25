@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/utils/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
+import { decryptSecret, encryptSecret, isEncryptedSecret } from '@/lib/token-crypto'
 
 export async function GET(request: Request) {
     const { searchParams, origin } = new URL(request.url)
@@ -12,7 +13,6 @@ export async function GET(request: Request) {
 
         if (!error && data.session) {
             const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-            console.log('DEBUG: Auth Callback triggered. Service Role Key present:', !!serviceRoleKey)
 
             if (!serviceRoleKey) {
                 console.error('CRITICAL: SUPABASE_SERVICE_ROLE_KEY is missing in .env.local')
@@ -28,10 +28,22 @@ export async function GET(request: Request) {
             const { provider_token, provider_refresh_token } = data.session
 
             if (provider_token) {
+                const encryptedProviderToken = encryptSecret(provider_token)
+                const encryptedRefreshToken = provider_refresh_token ? encryptSecret(provider_refresh_token) : null
+
+                if (isEncryptedSecret(encryptedProviderToken)) {
+                    try {
+                        decryptSecret(encryptedProviderToken)
+                    } catch (tokenEncryptionError) {
+                        console.error('Failed to validate encrypted provider token:', tokenEncryptionError)
+                        return NextResponse.redirect(`${origin}/login?error=token_store_failed`)
+                    }
+                }
+
                 const { error: upsertError } = await adminAuthClient.from('user_tokens').upsert({
                     user_id: data.session.user.id,
-                    provider_token: provider_token,
-                    provider_refresh_token: provider_refresh_token,
+                    provider_token: encryptedProviderToken,
+                    provider_refresh_token: encryptedRefreshToken,
                 }, { onConflict: 'user_id' })
 
                 if (upsertError) {

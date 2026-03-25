@@ -9,6 +9,7 @@ export function AutoSync() {
     const router = useRouter()
     const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null)
     const [lastStatus, setLastStatus] = useState<string>('Initializing auto sync...')
+    const [syncState, setSyncState] = useState<'active' | 'paused' | 'error'>('active')
     const syncInFlightRef = useRef(false)
 
     useEffect(() => {
@@ -17,12 +18,14 @@ export function AutoSync() {
         const runSync = async () => {
             if (cancelled || syncInFlightRef.current || document.visibilityState !== 'visible') {
                 if (!cancelled && document.visibilityState !== 'visible') {
+                    setSyncState('paused')
                     setLastStatus('Paused while tab is not visible')
                 }
                 return
             }
 
             syncInFlightRef.current = true
+            setSyncState('active')
             setLastStatus('Checking Gmail for new transactions...')
 
             try {
@@ -40,22 +43,28 @@ export function AutoSync() {
                 setLastSyncedAt(new Date().toLocaleTimeString())
                 setLastStatus(result.message)
 
-                router.refresh()
+                if ((result?.count ?? 0) > 0) {
+                    router.refresh()
+                }
             } catch (error: any) {
                 if (cancelled) return
+                setSyncState('error')
                 setLastStatus(error?.message || 'Auto sync failed')
             } finally {
                 syncInFlightRef.current = false
             }
         }
 
+        setSyncState(document.visibilityState === 'visible' ? 'active' : 'paused')
         setLastStatus(document.visibilityState === 'visible' ? 'Auto sync ready' : 'Paused while tab is not visible')
         void runSync()
 
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'visible') {
+                setSyncState('active')
                 void runSync()
             } else {
+                setSyncState('paused')
                 setLastStatus('Paused while tab is not visible')
             }
         }
@@ -79,14 +88,22 @@ export function AutoSync() {
                         While this page is open, Gmail sync runs about every minute.
                     </p>
                 </div>
-                <span className="rounded-full bg-secondary/12 px-2.5 py-1 text-xs font-medium text-secondary">
-                    Active
+                <span
+                    className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                        syncState === 'error'
+                            ? 'bg-destructive/12 text-destructive'
+                            : syncState === 'paused'
+                                ? 'bg-accent text-primary'
+                                : 'bg-secondary/12 text-secondary'
+                    }`}
+                >
+                    {syncState === 'error' ? 'Attention' : syncState === 'paused' ? 'Paused' : 'Active'}
                 </span>
             </div>
             <p className="mt-4 text-xs text-muted-foreground">
                 Last background check: {lastSyncedAt ?? 'Waiting for first run'}
             </p>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1 text-xs text-muted-foreground" role="status" aria-live="polite">
                 Status: {lastStatus}
             </p>
         </div>

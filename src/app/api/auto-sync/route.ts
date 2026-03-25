@@ -6,9 +6,10 @@ export async function POST() {
     try {
         const result = await syncExpenses({ source: 'auto' })
         return NextResponse.json(result)
-    } catch (error: any) {
+    } catch (error) {
+        console.error('Auto sync failed.', error)
         return NextResponse.json(
-            { error: error?.message || 'Auto sync failed.' },
+            { error: 'Auto sync is temporarily unavailable.' },
             { status: 500 }
         )
     }

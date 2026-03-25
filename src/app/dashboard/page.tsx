@@ -1,7 +1,7 @@
 import { createClient } from '@/utils/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { fetchDailySpending, fetchDashboardStats, fetchExpenses, fetchSyncDiagnostics } from '@/app/actions/expenses'
+import { fetchDashboardStats, fetchExpenses, fetchSyncDiagnostics, type ExpenseRecord } from '@/app/actions/expenses'
 import { AppShell } from '@/components/app-shell'
 import { AutoSync } from '@/components/auto-sync'
 import { DailySpendingChart } from '@/components/daily-spending-chart'
@@ -15,6 +15,7 @@ import { SignOutButton } from '@/components/sign-out-button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Wallet, CreditCard, Mail, CalendarRange, LineChart as LineChartIcon, Sparkles, ArrowUpRight } from "lucide-react"
+import { buildDailySpendingSeries } from '@/lib/expense-series'
 
 const dateFilterOptions = [
   { label: '7D', value: 7 },
@@ -43,7 +44,7 @@ export default async function Dashboard({
       ? 'all'
       : 14
 
-  let expenses: any[] = []
+  let expenses: ExpenseRecord[] = []
   let dailySpending: { date: string; amount: number; transactions: number }[] = []
   let stats = {
     totalSpent: 0,
@@ -60,15 +61,14 @@ export default async function Dashboard({
   }
 
   try {
-    const [fetchedExpenses, fetchedStats, fetchedDailySpending, fetchedSyncDiagnostics] = await Promise.all([
+    const [fetchedExpenses, fetchedStats, fetchedSyncDiagnostics] = await Promise.all([
       fetchExpenses(days),
       fetchDashboardStats(days),
-      fetchDailySpending(days),
       fetchSyncDiagnostics(),
     ])
     expenses = fetchedExpenses
     stats = fetchedStats
-    dailySpending = fetchedDailySpending
+    dailySpending = buildDailySpendingSeries(fetchedExpenses)
     syncDiagnostics = fetchedSyncDiagnostics
   } catch (err) {
     console.warn("Could not fetch expenses yet.", err)
@@ -127,6 +127,7 @@ export default async function Dashboard({
                 <Link
                   key={option.label}
                   href={href}
+                  aria-current={isActive ? 'page' : undefined}
                   className={`inline-flex items-center rounded-full px-4 py-2 text-sm font-medium transition-colors ${
                     isActive
                       ? 'bg-white text-primary'
@@ -179,6 +180,7 @@ export default async function Dashboard({
       </section>
 
       <SectionPanel
+        className="scroll-mt-24"
         title="Daily View"
         description="A clean read on how spending accumulates across the selected range."
         action={
@@ -188,7 +190,7 @@ export default async function Dashboard({
           </div>
         }
       >
-        <div className="grid gap-6 lg:grid-cols-[1.8fr_0.95fr]">
+        <div id="daily-view" className="grid gap-6 lg:grid-cols-[1.8fr_0.95fr]">
           <div>
             {dailySpending.length === 0 ? (
               <div className="flex h-72 items-center justify-center rounded-[1.5rem] bg-muted text-sm text-muted-foreground">
@@ -222,47 +224,71 @@ export default async function Dashboard({
         <SectionPanel
           title="Recent Transactions"
           description="Latest parsed transactions, structured from your Gmail-linked receipts and bank alerts."
-          className="min-w-0"
+          className="min-w-0 scroll-mt-24"
         >
           {expenses.length === 0 ? (
             <div className="flex min-h-72 items-center justify-center rounded-[1.5rem] bg-muted text-sm text-muted-foreground">
               No expenses found yet. Use Sync Emails to populate the ledger.
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead>Merchant</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Mode</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {expenses.map((expense) => (
-                  <TableRow key={expense.id}>
-                    <TableCell className="font-medium text-foreground">{expense.merchant}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className="bg-accent px-2.5 py-1 text-[0.72rem] text-primary hover:bg-accent">
-                        {expense.category}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">{expense.payment_method ?? 'Other'}</TableCell>
-                    <TableCell className="text-muted-foreground">{expense.date}</TableCell>
-                    <TableCell className="text-right font-medium text-foreground">Rs.{expense.amount.toFixed(2)}</TableCell>
+            <>
+            <div className="grid gap-3 md:hidden">
+              {expenses.map((expense) => (
+                <article key={expense.id} className="rounded-[1.25rem] bg-muted p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-foreground">{expense.merchant}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{expense.date}</p>
+                    </div>
+                    <p className="text-right font-medium text-foreground">Rs.{expense.amount.toFixed(2)}</p>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <Badge variant="secondary" className="bg-accent px-2.5 py-1 text-[0.72rem] text-primary hover:bg-accent">
+                      {expense.category}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">{expense.payment_method ?? 'Other'}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead>Merchant</TableHead>
+                    <TableHead>Category</TableHead>
+                    <TableHead>Mode</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead className="text-right">Amount</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {expenses.map((expense) => (
+                    <TableRow key={expense.id}>
+                      <TableCell className="font-medium text-foreground">{expense.merchant}</TableCell>
+                      <TableCell>
+                        <Badge variant="secondary" className="bg-accent px-2.5 py-1 text-[0.72rem] text-primary hover:bg-accent">
+                          {expense.category}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">{expense.payment_method ?? 'Other'}</TableCell>
+                      <TableCell className="text-muted-foreground">{expense.date}</TableCell>
+                      <TableCell className="text-right font-medium text-foreground">Rs.{expense.amount.toFixed(2)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            </>
           )}
         </SectionPanel>
 
         <SectionPanel
+          className="scroll-mt-24"
           title="System Health"
           description="Operational readout for inbox ingestion and the quality of the parsed transaction stream."
         >
-          <div className="space-y-5">
+          <div id="auto-sync" className="space-y-5">
             <div className="rounded-[1.5rem] bg-muted p-5">
               <div className="flex items-center justify-between">
                 <div>
