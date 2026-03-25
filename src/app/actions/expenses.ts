@@ -294,18 +294,20 @@ function parseHdfcCreditCard(content: string, fallbackDate: string | null) {
 }
 
 function parseAxisStructured(content: string, fallbackDate: string | null) {
-    const amountMatch = content.match(/Transaction Amount:\s*INR\s*([\d,]+\.\d{2})/i)
+    const amountMatch = content.match(/Transaction Amount:\s*INR\s*([\d,]+(?:\.\d{1,2})?)/i)
     const merchantMatch = content.match(/Merchant Name:\s*([A-Z0-9 &*._-]+)/i)
+    const dateMatch = content.match(/Date\s*&\s*Time:\s*(\d{2})-(\d{2})-(\d{4})(?:,\s*\d{2}:\d{2}:\d{2}\s*[A-Z]{2,4})?/i)
     if (!amountMatch || !merchantMatch) return null
 
     const merchant = normalizeMerchant(merchantMatch[1])
+    const parsedDate = dateMatch ? `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}` : null
 
     return {
         merchant,
         category: merchant.toLowerCase().includes('uber') ? 'Transport' : 'Credit Card',
         amount: Number(amountMatch[1].replace(/,/g, '')),
         currency: 'INR',
-        date: fallbackDate || formatDate(new Date()),
+        date: parsedDate || fallbackDate || formatDate(new Date()),
         description: merchant.toLowerCase().includes('uber') ? 'Uber ride payment' : `Card payment to ${merchant}`,
         payment_method: 'Credit Card' as const,
         confidence: 0.95,
@@ -491,8 +493,8 @@ Email: "Rs.128.00 is debited from your HDFC Bank Credit Card ending 4300 towards
 JSON: {"merchant":"Swiggy Food","category":"Food & Dining","amount":128,"currency":"INR","date":"2026-03-21","description":"Credit card payment to Swiggy Food","payment_method":"Credit Card","confidence":0.99}
 
 Example 3:
-Email: "Transaction Amount: INR 25.19 Merchant Name: UBER INDIA"
-JSON: {"merchant":"Uber India","category":"Transport","amount":25.19,"currency":"INR","date":"2026-03-21","description":"Uber ride payment","payment_method":"Credit Card","confidence":0.95}
+Email: "Transaction Amount: INR 60 Merchant Name: KAMAKHYA K Date & Time: 25-03-2026, 13:14:14 IST"
+JSON: {"merchant":"Kamakhya K","category":"Credit Card","amount":60,"currency":"INR","date":"2026-03-25","description":"Card payment to Kamakhya K","payment_method":"Credit Card","confidence":0.95}
 
 If the email is not a transaction or amount/date are missing, return {"error":"not_a_transaction"}.
 `
